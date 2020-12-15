@@ -52,7 +52,7 @@ func saveEntity(key *Key, src interface{}) (*pb.Entity, error) {
 // and tries to extract a Property that'll be appended to props.
 func reflectFieldSave(props *[]Property, p Property, name string, opts saveOpts, v reflect.Value) error {
 	switch x := v.Interface().(type) {
-	case *Key, time.Time, GeoPoint:
+	case *Key, time.Time, GeoPoint, *pb.Value:
 		p.Value = x
 	case civil.Date:
 		p.Value = x.In(time.UTC)
