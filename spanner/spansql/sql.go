@@ -158,10 +158,30 @@ func (d *Delete) SQL() string {
 	return "DELETE FROM " + d.Table.SQL() + " WHERE " + d.Where.SQL()
 }
 
+func (u *Update) SQL() string {
+	str := "UPDATE " + u.Table.SQL() + " SET "
+	for i, item := range u.Items {
+		if i > 0 {
+			str += ", "
+		}
+		str += item.Column.SQL() + " = "
+		if item.Value != nil {
+			str += item.Value.SQL()
+		} else {
+			str += "DEFAULT"
+		}
+	}
+	str += " WHERE " + u.Where.SQL()
+	return str
+}
+
 func (cd ColumnDef) SQL() string {
 	str := cd.Name.SQL() + " " + cd.Type.SQL()
 	if cd.NotNull {
 		str += " NOT NULL"
+	}
+	if cd.Generated != nil {
+		str += " AS (" + cd.Generated.SQL() + ") STORED"
 	}
 	if cd.Options != (ColumnOptions{}) {
 		str += " " + cd.Options.SQL()
@@ -214,6 +234,8 @@ func (tb TypeBase) SQL() string {
 		return "INT64"
 	case Float64:
 		return "FLOAT64"
+	case Numeric:
+		return "NUMERIC"
 	case String:
 		return "STRING"
 	case Bytes:
@@ -321,6 +343,14 @@ var joinTypes = map[JoinType]string{
 	FullJoin:  "FULL",
 	LeftJoin:  "LEFT",
 	RightJoin: "RIGHT",
+}
+
+func (sfu SelectFromUnnest) SQL() string {
+	str := "UNNEST(" + sfu.Expr.SQL() + ")"
+	if sfu.Alias != "" {
+		str += " AS " + sfu.Alias.SQL()
+	}
+	return str
 }
 
 func (o Order) SQL() string { return buildSQL(o) }
@@ -495,6 +525,13 @@ func (p Paren) addSQL(sb *strings.Builder) {
 	sb.WriteString("(")
 	p.Expr.addSQL(sb)
 	sb.WriteString(")")
+}
+
+func (a Array) SQL() string { return buildSQL(a) }
+func (a Array) addSQL(sb *strings.Builder) {
+	sb.WriteString("[")
+	addExprList(sb, []Expr(a), ", ")
+	sb.WriteString("]")
 }
 
 func (id ID) SQL() string { return buildSQL(id) }

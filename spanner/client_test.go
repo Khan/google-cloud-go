@@ -537,7 +537,7 @@ func TestClient_ReadOnlyTransaction_SessionNotFoundOnExecuteStreamingSql(t *test
 	err := testReadOnlyTransaction(t, map[string]SimulatedExecutionTime{
 		MethodExecuteStreamingSql: {Errors: []error{newSessionNotFoundError("projects/p/instances/i/databases/d/sessions/s")}},
 	})
-	want := toSpannerError(newSessionNotFoundError("projects/p/instances/i/databases/d/sessions/s"))
+	want := ToSpannerError(newSessionNotFoundError("projects/p/instances/i/databases/d/sessions/s"))
 	if err == nil {
 		t.Fatalf("missing expected error\nGot: nil\nWant: %v", want)
 	}
@@ -825,6 +825,34 @@ func TestClient_ReadWriteTransaction_Update_QueryOptions(t *testing.T) {
 			}
 			checkReqsForQueryOptions(t, server.TestSpanner, tt.want)
 		})
+	}
+}
+
+func TestClient_ReadWriteTransaction_DoNotLeakSessionOnPanic(t *testing.T) {
+	// Make sure that there is always only one session in the pool.
+	sc := SessionPoolConfig{
+		MinOpened: 1,
+		MaxOpened: 1,
+	}
+	_, client, teardown := setupMockedTestServerWithConfig(t, ClientConfig{SessionPoolConfig: sc})
+	defer teardown()
+	ctx := context.Background()
+
+	// If a panic occurs during a transaction, the session will not leak.
+	func() {
+		defer func() { recover() }()
+
+		_, err := client.ReadWriteTransaction(ctx, func(ctx context.Context, tx *ReadWriteTransaction) error {
+			panic("cause panic")
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error during transaction: %v", err)
+		}
+	}()
+
+	if g, w := client.idleSessions.idleList.Len(), 1; g != w {
+		t.Fatalf("idle session count mismatch.\nGot: %v\nWant: %v", g, w)
 	}
 }
 
@@ -2181,5 +2209,61 @@ func queryOptionsTestCases() []QueryOptionsTestCase {
 			QueryOptions{Options: &sppb.ExecuteSqlRequest_QueryOptions{OptimizerVersion: "3"}},
 			QueryOptions{Options: &sppb.ExecuteSqlRequest_QueryOptions{OptimizerVersion: "3"}},
 		},
+	}
+}
+
+func TestClient_DoForEachRow_ShouldNotEndSpanWithIteratorDoneError(t *testing.T) {
+	// This test cannot be parallel, as the TestExporter does not support that.
+	te := itestutil.NewTestExporter()
+	defer te.Unregister()
+	_, client, teardown := setupMockedTestServer(t)
+	defer teardown()
+
+	iter := client.Single().Query(context.Background(), NewStatement(SelectSingerIDAlbumIDAlbumTitleFromAlbums))
+	iter.Do(func(r *Row) error {
+		return nil
+	})
+	select {
+	case <-te.Stats:
+	case <-time.After(1 * time.Second):
+		t.Fatal("No stats were exported before timeout")
+	}
+	if len(te.Spans) == 0 {
+		t.Fatal("No spans were exported")
+	}
+	s := te.Spans[len(te.Spans)-1].Status
+	if s.Code != int32(codes.OK) {
+		t.Errorf("Span status mismatch\nGot: %v\nWant: %v", s.Code, codes.OK)
+	}
+}
+
+func TestClient_DoForEachRow_ShouldEndSpanWithQueryError(t *testing.T) {
+	// This test cannot be parallel, as the TestExporter does not support that.
+	te := itestutil.NewTestExporter()
+	defer te.Unregister()
+	server, client, teardown := setupMockedTestServer(t)
+	defer teardown()
+
+	sql := "SELECT * FROM"
+	server.TestSpanner.PutStatementResult(sql, &StatementResult{
+		Type: StatementResultError,
+		Err:  status.Error(codes.InvalidArgument, "Invalid query"),
+	})
+
+	iter := client.Single().Query(context.Background(), NewStatement(sql))
+	iter.Do(func(r *Row) error {
+		return nil
+	})
+	select {
+	case <-te.Stats:
+	case <-time.After(1 * time.Second):
+		t.Fatal("No stats were exported before timeout")
+	}
+	if len(te.Spans) == 0 {
+		t.Fatal("No spans were exported")
+	}
+	s := te.Spans[len(te.Spans)-1].Status
+	if s.Code != int32(codes.InvalidArgument) {
+		t.Errorf("Span status mismatch\nGot: %v\nWant: %v", s.Code, codes.InvalidArgument)
 	}
 }
