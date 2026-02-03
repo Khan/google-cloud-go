@@ -60,7 +60,58 @@ func (m *Mutation) WithTransforms(transforms ...PropertyTransform) *Mutation {
 		}
 		m.mut.PropertyTransforms = append(m.mut.PropertyTransforms, transform.pb)
 	}
+
+	setMutationProtoPropertyMaskForTransforms(m.mut)
+
 	return m
+}
+
+// setMutationProtoPropertyMaskForTransforms sets the property mask on the
+// given mutation to match the client-provided property names in the
+// mutation. This is only done when transforms are present. Otherwise, no
+// property mask (the default) is used, which means "write all properties".
+//
+// When transforming properties there are two cases: 1) a property is written
+// in the mutation (using a value from the client) and then transformed, and
+// 2) the server value of the property is read and transformed.
+//
+// The first case is what the pre-existing datastore library integration tests
+// verify (the "PutAndTransform" tests). But this isn't a very interesting
+// case! If you're writing a value from the client and then transforming it,
+// the client might as well just write the final value in the first place.
+//
+// The second case is interesting and useful -- it enables transformation of
+// server property values in a mutation without a client round trip. To use
+// this behavior the property mask must NOT include the property being
+// transformed.
+//
+// This function enables clients to specify an empty entity, e.g.
+// &PropertyList{}, to indicate that no client values should be written. If
+// the client provide properties to write, this function will add those
+// properties to the property mask so they're written as expected (and then
+// if a property transformed is also specified). This behavior still allows
+// other properties to be omitted so server transforms can occur.
+func setMutationProtoPropertyMaskForTransforms(mut *pb.Mutation) {
+	if len(mut.PropertyTransforms) == 0 {
+		return
+	}
+
+	paths := []string{}
+	switch o := mut.Operation.(type) {
+	case *pb.Mutation_Insert:
+		for name := range o.Insert.Properties {
+			paths = append(paths, name)
+		}
+	case *pb.Mutation_Update:
+		for name := range o.Update.Properties {
+			paths = append(paths, name)
+		}
+	case *pb.Mutation_Upsert:
+		for name := range o.Upsert.Properties {
+			paths = append(paths, name)
+		}
+	}
+	mut.PropertyMask = &pb.PropertyMask{Paths: paths}
 }
 
 // NewInsert creates a Mutation that will save the entity src into the
