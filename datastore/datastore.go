@@ -820,6 +820,7 @@ func putMutations(keys []*Key, src interface{}, transforms [][]PropertyTransform
 		} else {
 			mut = &pb.Mutation{Operation: &pb.Mutation_Upsert{Upsert: p}, PropertyTransforms: pbTransforms}
 		}
+		setMutationProtoPropertyMaskForTransforms(mut)
 		mutations = append(mutations, mut)
 	}
 	if hasErr {
